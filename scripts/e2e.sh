@@ -50,4 +50,19 @@ wait "$sender2"
 diff -r -x empty-dir "$src" "$work/dst/src"
 grep -Eq 'done: [0-9]+ files \([0-9]+ skipped\)' "$work/sender2.log"
 grep -q 'skipped' "$work/receiver2.log"
+
+# regression: default relative outdir (".") must accept single-file sends
+codes3="$work/codes3"
+rel="$work/rel"
+mkdir -p "$rel"
+(
+	cd "$rel"
+	"$bin" receive --code-file "$codes3"
+) >"$work/rel-r.log" 2>&1 &
+relr=$!
+"$bin" send --code-file "$codes3" "$src/one.bin" >"$work/rel-s.log" 2>&1
+wait "$relr"
+[ -f "$rel/one.bin" ]
+grep -q 'done:' "$work/rel-r.log"
+
 echo "e2e ok"

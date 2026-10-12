@@ -133,9 +133,15 @@ func (l errLogger) Debugf(format string, args ...any) {}
 func (l errLogger) Info(msg string)                   {}
 func (l errLogger) Infof(format string, args ...any)  {}
 func (l errLogger) Warn(msg string) {
+	if strings.Contains(msg, "Discard message") {
+		return
+	}
 	fmt.Fprintln(os.Stderr, "tp: ["+l.scope+"]", msg)
 }
 func (l errLogger) Warnf(format string, args ...any) {
+	if strings.HasPrefix(format, "Discard message") {
+		return
+	}
 	fmt.Fprintf(os.Stderr, "tp: ["+l.scope+"] "+format+"\n", args...)
 }
 func (l errLogger) Error(msg string) {

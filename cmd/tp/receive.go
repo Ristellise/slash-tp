@@ -112,8 +112,12 @@ func runReceive(outDir, codeFile, public string, upnp bool) error {
 		return err
 	}
 
+	absDir, err := filepath.Abs(outDir)
+	if err != nil {
+		return err
+	}
 	recv := &receiver{
-		dir:    outDir,
+		dir:    absDir,
 		files:  make(map[uint32]*recvFile),
 		done:   make(chan struct{}),
 		errCh:  make(chan error, 1),
