@@ -97,12 +97,9 @@ func reportConnFailure(lastICE string, local, remote []iceCand) {
 		fmt.Fprintln(os.Stderr, "    no remote candidates in the pasted code — it may be truncated or from an incompatible tp")
 	case !hasSrflx(local) || !hasSrflx(remote):
 		fmt.Fprintln(os.Stderr, "    a peer has no srflx candidate (STUN unreachable) — direct connection only works on the same LAN")
-	case symmetricNAT(local) || symmetricNAT(remote):
-		fmt.Fprintln(os.Stderr, "    symmetric NAT confirmed (mapped ports differ across STUN servers) —")
-		fmt.Fprintln(os.Stderr, "    direct P2P cannot traverse this without a relay, and tp has none by design")
 	default:
-		fmt.Fprintln(os.Stderr, "    both NATs look endpoint-independent (same mapped port across STUN servers) —")
-		fmt.Fprintln(os.Stderr, "    the peer checks are likely dropped by a firewall (e.g. a cloud security group blocking inbound UDP)")
+		fmt.Fprintln(os.Stderr, "    if either side's 'local nat' line above says symmetric, that's the blocker;")
+		fmt.Fprintln(os.Stderr, "    otherwise inbound UDP is being dropped by a firewall (e.g. a cloud security group)")
 	}
 }
 
@@ -111,21 +108,6 @@ func hasSrflx(cs []iceCand) bool {
 		if c.typ == candSrflx {
 			return true
 		}
-	}
-	return false
-}
-
-func symmetricNAT(cs []iceCand) bool {
-	ports := make(map[string]uint16)
-	for _, c := range cs {
-		if c.typ != candSrflx {
-			continue
-		}
-		base := c.raddr.String()
-		if p, ok := ports[base]; ok && p != c.port {
-			return true
-		}
-		ports[base] = c.port
 	}
 	return false
 }

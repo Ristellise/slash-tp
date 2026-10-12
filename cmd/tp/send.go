@@ -52,6 +52,8 @@ func runSend(root string, nCh int, codeFile string) error {
 	}
 	defer pc.Close()
 
+	go func() { fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT()) }()
+
 	errCh := make(chan error, 1)
 	fail := func(err error) {
 		select {

@@ -67,6 +67,8 @@ func runReceive(outDir, codeFile string) error {
 	}
 	defer pc.Close()
 
+	go func() { fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT()) }()
+
 	errCh := make(chan error, 1)
 	var cands []iceCand
 	ice := &iceState{}
