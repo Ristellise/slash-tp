@@ -1,0 +1,18 @@
+# General design
+
+1. use golang
+2. use https://github.com/pion/webrtc
+3. use multi-thread data-channels
+4. stream large and massive folders recursively as fast as network allows
+5. P2P only with google STUN servers.
+6. some sort of way to share SDP easier with like shared passphrase code
+   - For unique names generation, refer to `/mnt/proxmox/Projects/unique-names-generator-jp/` to make one.
+7. github actions to auto build go binaries.
+8. use git for standard control versioning
+9. avoid excessive testing.
+10. Recall the python zen. simple is better than complex, complex is better than complicated
+   - Lesser comments and train of thought.
+
+# Naming
+
+/tp (Minecraft command to teleport to an aribitary location)
