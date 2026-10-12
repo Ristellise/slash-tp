@@ -28,7 +28,7 @@ type verdict struct {
 	have bool
 }
 
-func runSend(root string, nCh int, codeFile, public string) error {
+func runSend(root string, nCh int, codeFile, public string, upnp bool) error {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return err
@@ -42,6 +42,11 @@ func runSend(root string, nCh int, codeFile, public string) error {
 	}
 	top := filepath.Base(abs)
 
+	public, stop := resolveEndpoint(public, upnp)
+	if stop != nil {
+		defer stop()
+	}
+
 	sess, err := newSession()
 	if err != nil {
 		return err
@@ -52,7 +57,7 @@ func runSend(root string, nCh int, codeFile, public string) error {
 	}
 	defer pc.Close()
 
-	go natProbeLine(public)
+	go natProbeLine(public, upnp)
 
 	errCh := make(chan error, 1)
 	fail := func(err error) {

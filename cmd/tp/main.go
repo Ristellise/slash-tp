@@ -11,8 +11,8 @@ var version = "dev"
 const usage = `tp — peer-to-peer file & folder transfer over WebRTC data channels
 
 Usage:
-  tp send   [-c N] [--public ip:port] [--code-file F] <path>
-  tp receive [--public ip:port] [--code-file F] [outdir]
+  tp send   [-c N] [--public ip:port | --upnp] [--code-file F] <path>
+  tp receive [--public ip:port | --upnp] [--code-file F] [outdir]
   tp version
 
 
@@ -26,6 +26,8 @@ Flags:
   --public ip:port advertise this public IPv4 endpoint instead of STUN
                    hole punching (requires a UDP port-forward to this machine;
                    lets a symmetric-NAT peer connect out to you)
+  --upnp           ask the router (UPnP IGD) for a UDP port-forward
+                   automatically; falls back to STUN hole punching if no IGD
   --code-file F    exchange codes via files F.offer / F.answer
                    instead of copy-paste
 
@@ -50,6 +52,7 @@ func run(args []string) error {
 		channels := fs.Int("c", 8, "parallel data channels")
 		codeFile := fs.String("code-file", "", "exchange codes via files instead of copy-paste")
 		public := fs.String("public", "", "advertise ip:port as a UDP-forwarded public endpoint")
+		upnp := fs.Bool("upnp", false, "ask the router via UPnP for a UDP port-forward")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -59,22 +62,29 @@ func run(args []string) error {
 		if *channels < 1 || *channels > 64 {
 			return fmt.Errorf("channel count must be between 1 and 64")
 		}
-		return runSend(fs.Arg(0), *channels, *codeFile, *public)
+		if *upnp && *public != "" {
+			return fmt.Errorf("use either --public or --upnp, not both")
+		}
+		return runSend(fs.Arg(0), *channels, *codeFile, *public, *upnp)
 	case "receive":
 		fs := flag.NewFlagSet("tp receive", flag.ExitOnError)
 		codeFile := fs.String("code-file", "", "exchange codes via files instead of copy-paste")
 		public := fs.String("public", "", "advertise ip:port as a UDP-forwarded public endpoint")
+		upnp := fs.Bool("upnp", false, "ask the router via UPnP for a UDP port-forward")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() > 1 {
 			return fmt.Errorf("receive: at most one [outdir]")
 		}
+		if *upnp && *public != "" {
+			return fmt.Errorf("use either --public or --upnp, not both")
+		}
 		out := "."
 		if fs.NArg() == 1 {
 			out = fs.Arg(0)
 		}
-		return runReceive(out, *codeFile, *public)
+		return runReceive(out, *codeFile, *public, *upnp)
 	case "version":
 		fmt.Println("tp", version)
 		return nil

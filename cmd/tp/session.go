@@ -103,9 +103,13 @@ func reportConnFailure(lastICE string, local, remote []iceCand) {
 	}
 }
 
-func natProbeLine(public string) {
+func natProbeLine(public string, viaUPnP bool) {
 	if public != "" {
-		fmt.Fprintln(os.Stderr, "tp: reachable at", public, "— ensure UDP is forwarded to this port")
+		if viaUPnP {
+			fmt.Fprintln(os.Stderr, "tp: reachable at", public)
+		} else {
+			fmt.Fprintln(os.Stderr, "tp: reachable at", public, "— ensure UDP is forwarded to this port")
+		}
 		return
 	}
 	fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT())

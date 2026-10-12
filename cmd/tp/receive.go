@@ -47,7 +47,12 @@ func (r *receiver) fail(err error) {
 	}
 }
 
-func runReceive(outDir, codeFile, public string) error {
+func runReceive(outDir, codeFile, public string, upnp bool) error {
+	public, stop := resolveEndpoint(public, upnp)
+	if stop != nil {
+		defer stop()
+	}
+
 	offerCode, err := readCode(codeFile, "offer", "paste offer code: ")
 	if err != nil {
 		return err
@@ -56,6 +61,7 @@ func runReceive(outDir, codeFile, public string) error {
 	if err != nil {
 		return err
 	}
+
 	sess, err := resumeSession(seed)
 	if err != nil {
 		return err
@@ -67,7 +73,7 @@ func runReceive(outDir, codeFile, public string) error {
 	}
 	defer pc.Close()
 
-	go natProbeLine(public)
+	go natProbeLine(public, upnp)
 
 	errCh := make(chan error, 1)
 	var cands []iceCand
