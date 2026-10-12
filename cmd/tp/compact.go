@@ -84,36 +84,39 @@ func (c iceCand) marshal() string {
 	return line
 }
 
-// offerPayload: [ver|flags][seed 16][count][cands]
-// answerPayload: [ver|flags][count][cands]
+// offerPayload: [ver|flags][seed 16][pcs][ (count)[cands] ] per pc
+// answerPayload: [ver|flags][ (count)[cands] ] per pc
 // cand: [type|fam][prio 4][ip][port 2][raddr][rport 2]
-func encodePayload(seed []byte, cands []iceCand) []byte {
+func encodePayload(seed []byte, pcs [][]iceCand) []byte {
 	var b []byte
 	flags := byte(0)
 	if len(seed) > 0 {
 		flags |= 1
 	}
-	b = append(b, 0x20|flags)
+	b = append(b, 0x30|flags)
 	if len(seed) > 0 {
 		b = append(b, seed...)
 	}
-	b = append(b, byte(len(cands)))
-	for _, c := range cands {
-		fam := byte(0)
-		ipv6 := c.ip.To4() == nil
-		if ipv6 {
-			fam = 4
-		}
-		b = append(b, c.typ|fam)
-		b = binary.BigEndian.AppendUint32(b, c.prio)
-		b = appendIP(b, c.ip)
-		b = binary.BigEndian.AppendUint16(b, c.port)
-		if c.typ == candSrflx || c.typ == candPrflx {
-			if c.raddr == nil {
-				c.raddr = net.IPv4zero
+	b = append(b, byte(len(pcs)))
+	for _, cands := range pcs {
+		b = append(b, byte(len(cands)))
+		for _, c := range cands {
+			fam := byte(0)
+			ipv6 := c.ip.To4() == nil
+			if ipv6 {
+				fam = 4
 			}
-			b = appendIP(b, c.raddr)
-			b = binary.BigEndian.AppendUint16(b, c.rport)
+			b = append(b, c.typ|fam)
+			b = binary.BigEndian.AppendUint32(b, c.prio)
+			b = appendIP(b, c.ip)
+			b = binary.BigEndian.AppendUint16(b, c.port)
+			if c.typ == candSrflx || c.typ == candPrflx {
+				if c.raddr == nil {
+					c.raddr = net.IPv4zero
+				}
+				b = appendIP(b, c.raddr)
+				b = binary.BigEndian.AppendUint16(b, c.rport)
+			}
 		}
 	}
 	return b
@@ -126,8 +129,8 @@ func appendIP(b []byte, ip net.IP) []byte {
 	return append(b, ip.To16()...)
 }
 
-func decodePayload(b []byte) (seed []byte, cands []iceCand, err error) {
-	if len(b) < 2 || b[0]>>4 != 2 {
+func decodePayload(b []byte) (seed []byte, pcs [][]iceCand, err error) {
+	if len(b) < 2 || b[0]>>4 != 3 {
 		return nil, nil, errors.New("unsupported session code version")
 	}
 	p := b[1:]
@@ -139,53 +142,62 @@ func decodePayload(b []byte) (seed []byte, cands []iceCand, err error) {
 		p = p[seedLen:]
 	}
 	if len(p) < 1 {
-		return nil, nil, errors.New("truncated candidate count")
+		return nil, nil, errors.New("truncated pc count")
 	}
-	n := int(p[0])
+	npcs := int(p[0])
 	p = p[1:]
-	for i := 0; i < n; i++ {
+	for j := 0; j < npcs; j++ {
 		if len(p) < 1 {
-			return nil, nil, errors.New("truncated candidate")
+			return nil, nil, errors.New("truncated candidate count")
 		}
-		hdr := p[0]
-		ipv6 := hdr&4 != 0
-		ipLen := 4
-		if ipv6 {
-			ipLen = 16
-		}
-		need := 1 + 4 + ipLen + 2
-		if hdr&3 == candSrflx || hdr&3 == candPrflx {
-			need += ipLen + 2
-		}
-		if len(p) < need {
-			return nil, nil, errors.New("truncated candidate")
-		}
-		c := iceCand{typ: hdr & 3, prio: binary.BigEndian.Uint32(p[1:5])}
-		p = p[5:]
-		if ipv6 {
-			c.ip = net.IP(append([]byte(nil), p[:16]...))
-		} else {
-			c.ip = net.IPv4(p[0], p[1], p[2], p[3])
-		}
-		p = p[ipLen:]
-		c.port = binary.BigEndian.Uint16(p)
-		p = p[2:]
-		if c.typ == candSrflx || c.typ == candPrflx {
+		n := int(p[0])
+		p = p[1:]
+		cands := []iceCand{}
+		for i := 0; i < n; i++ {
+			if len(p) < 1 {
+				return nil, nil, errors.New("truncated candidate")
+			}
+			hdr := p[0]
+			ipv6 := hdr&4 != 0
+			ipLen := 4
 			if ipv6 {
-				c.raddr = net.IP(append([]byte(nil), p[:16]...))
+				ipLen = 16
+			}
+			need := 1 + 4 + ipLen + 2
+			if hdr&3 == candSrflx || hdr&3 == candPrflx {
+				need += ipLen + 2
+			}
+			if len(p) < need {
+				return nil, nil, errors.New("truncated candidate")
+			}
+			c := iceCand{typ: hdr & 3, prio: binary.BigEndian.Uint32(p[1:5])}
+			p = p[5:]
+			if ipv6 {
+				c.ip = net.IP(append([]byte(nil), p[:16]...))
 			} else {
-				c.raddr = net.IPv4(p[0], p[1], p[2], p[3])
+				c.ip = net.IPv4(p[0], p[1], p[2], p[3])
 			}
 			p = p[ipLen:]
-			c.rport = binary.BigEndian.Uint16(p)
+			c.port = binary.BigEndian.Uint16(p)
 			p = p[2:]
+			if c.typ == candSrflx || c.typ == candPrflx {
+				if ipv6 {
+					c.raddr = net.IP(append([]byte(nil), p[:16]...))
+				} else {
+					c.raddr = net.IPv4(p[0], p[1], p[2], p[3])
+				}
+				p = p[ipLen:]
+				c.rport = binary.BigEndian.Uint16(p)
+				p = p[2:]
+			}
+			cands = append(cands, c)
 		}
-		cands = append(cands, c)
+		pcs = append(pcs, cands)
 	}
 	if len(p) != 0 {
 		return nil, nil, errors.New("trailing garbage in payload")
 	}
-	return seed, cands, nil
+	return seed, pcs, nil
 }
 
 func candStrings(cands []iceCand) []string {
@@ -265,17 +277,17 @@ func encodeCode(payload []byte) string {
 		if i > 0 {
 			sb.WriteByte('-')
 		}
-		sb.WriteString(s[i : min(i+5, len(s))])
+		sb.WriteString(s[i:min(i+5, len(s))])
 	}
 	return codeVersion + "#" + sb.String()
 }
 
 var codeRe = regexp.MustCompile(codeVersion + `#[0-9a-zA-Z-]+`)
 
-func decodeCode(code string) (seed []byte, cands []iceCand, err error) {
+func decodeCode(code string) (seed []byte, pcs [][]iceCand, err error) {
 	m := codeRe.FindString(code)
 	if m == "" {
-		return nil, nil, errors.New("no session code found (expected tp2#...)")
+		return nil, nil, fmt.Errorf("no session code found (expected %s#...)", codeVersion)
 	}
 	raw, err := b32Decode(m[len(codeVersion)+1:])
 	if err != nil {

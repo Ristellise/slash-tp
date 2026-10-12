@@ -103,18 +103,6 @@ func reportConnFailure(lastICE string, local, remote []iceCand) {
 	}
 }
 
-func natProbeLine(public string, viaUPnP bool) {
-	if public != "" {
-		if viaUPnP {
-			fmt.Fprintln(os.Stderr, "tp: reachable at", public)
-		} else {
-			fmt.Fprintln(os.Stderr, "tp: reachable at", public, "— ensure UDP is forwarded to this port")
-		}
-		return
-	}
-	fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT())
-}
-
 func hasSrflx(cs []iceCand) bool {
 	for _, c := range cs {
 		if c.typ == candSrflx {
@@ -153,4 +141,25 @@ func (l errLogger) Errorf(format string, args ...any) {
 
 type loggerFactory struct{}
 
-func (loggerFactory) NewLogger(scope string) logging.LeveledLogger { return errLogger{scope} }
+func (loggerFactory) NewLogger(scope string) logging.LeveledLogger {
+	if os.Getenv("TP_TRACE") != "" {
+		return traceLogger{scope}
+	}
+	return errLogger{scope}
+}
+
+type traceLogger struct{ scope string }
+
+func (l traceLogger) log(level, msg string) {
+	fmt.Fprintln(os.Stderr, "tp:["+l.scope+"]", level, msg)
+}
+func (l traceLogger) Trace(msg string)          { l.log("trace", msg) }
+func (l traceLogger) Tracef(f string, a ...any) { l.log("trace", fmt.Sprintf(f, a...)) }
+func (l traceLogger) Debug(msg string)          { l.log("debug", msg) }
+func (l traceLogger) Debugf(f string, a ...any) { l.log("debug", fmt.Sprintf(f, a...)) }
+func (l traceLogger) Info(msg string)           { l.log("info", msg) }
+func (l traceLogger) Infof(f string, a ...any)  { l.log("info", fmt.Sprintf(f, a...)) }
+func (l traceLogger) Warn(msg string)           { l.log("warn", msg) }
+func (l traceLogger) Warnf(f string, a ...any)  { l.log("warn", fmt.Sprintf(f, a...)) }
+func (l traceLogger) Error(msg string)          { l.log("error", msg) }
+func (l traceLogger) Errorf(f string, a ...any) { l.log("error", fmt.Sprintf(f, a...)) }

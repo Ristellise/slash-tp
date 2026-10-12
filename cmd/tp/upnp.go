@@ -42,23 +42,27 @@ func localAddrToward(host string) string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// resolveEndpoint turns --upnp into a concrete public endpoint (mapping created,
-// cleanup returned) or passes --public through unchanged.
-func resolveEndpoint(public string, upnp bool) (string, func()) {
-	if public != "" || !upnp {
-		return public, nil
+// resolveEndpoints turns --upnp into n concrete public endpoints (mappings
+// created, cleanup returned) or passes the single --public endpoint through.
+func resolveEndpoints(public string, upnp bool, n int) ([]string, func()) {
+	if public != "" {
+		return []string{public}, nil
 	}
-	if ep, ok, stop := upnpMapping(); ok {
-		return ep, stop
+	if !upnp || n <= 0 {
+		return nil, nil
+	}
+	eps, ok, stop := upnpMapping(n)
+	if ok {
+		return eps, stop
 	}
 	fmt.Fprintln(os.Stderr, "tp: upnp: no IGD mapping — falling back to STUN hole punching")
-	return "", nil
+	return nil, nil
 }
 
-// upnpMapping asks the router (UPnP IGD) for a UDP port-forward.
-// Returns the public endpoint, whether it succeeded, and a cleanup func.
-func upnpMapping() (string, bool, func()) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// upnpMapping asks the router (UPnP IGD) for n UDP port-forwards.
+// Returns the public endpoints, whether it succeeded, and a cleanup func.
+func upnpMapping(n int) ([]string, bool, func()) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var clients []igdClient
@@ -73,6 +77,9 @@ func upnpMapping() (string, bool, func()) {
 		}
 	}
 
+	var endpoints []string
+	var stops []func()
+outer:
 	for _, c := range clients {
 		extIP, err := c.GetExternalIPAddressCtx(ctx)
 		if err != nil {
@@ -86,7 +93,10 @@ func upnpMapping() (string, bool, func()) {
 		if localIP == "" {
 			continue
 		}
-		for range 5 {
+		for range 5 * n {
+			if len(endpoints) == n {
+				break outer
+			}
 			port := uint16(20000 + rand.IntN(40000))
 			err := c.AddPortMappingCtx(ctx, "", port, "UDP", port, localIP, true, "tp", 3600)
 			if err != nil {
@@ -108,15 +118,23 @@ func upnpMapping() (string, bool, func()) {
 					}
 				}
 			}()
-			stop := func() {
+			stops = append(stops, func() {
 				close(done)
 				rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = c.DeletePortMappingCtx(rctx, "", port, "UDP")
 				rcancel()
-				fmt.Fprintln(os.Stderr, "tp: upnp: mapping removed")
-			}
-			return fmt.Sprintf("%s:%d", extIP, port), true, stop
+			})
+			endpoints = append(endpoints, fmt.Sprintf("%s:%d", extIP, port))
 		}
 	}
-	return "", false, nil
+	if len(endpoints) == 0 {
+		return nil, false, nil
+	}
+	stop := func() {
+		for _, s := range stops {
+			s()
+		}
+		fmt.Fprintln(os.Stderr, "tp: upnp: mappings removed")
+	}
+	return endpoints, true, stop
 }

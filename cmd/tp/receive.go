@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -48,67 +49,33 @@ func (r *receiver) fail(err error) {
 }
 
 func runReceive(outDir, codeFile, public string, upnp bool) error {
-	public, stop := resolveEndpoint(public, upnp)
-	if stop != nil {
-		defer stop()
-	}
-
 	offerCode, err := readCode(codeFile, "offer", "paste offer code: ")
 	if err != nil {
 		return err
 	}
-	seed, offerCands, err := decodeCode(offerCode)
+	seed, offerPcs, err := decodeCode(offerCode)
 	if err != nil {
 		return err
+	}
+	nLanes := len(offerPcs)
+	if public != "" {
+		nLanes = 1 // one manually forwarded port can carry one lane
+	}
+
+	pins, stop := resolveEndpoints(public, upnp, nLanes)
+	if stop != nil {
+		defer stop()
+	}
+	if len(pins) > 0 {
+		for _, pin := range pins {
+			fmt.Fprintln(os.Stderr, "tp: reachable at", pin)
+		}
+	} else {
+		go fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT())
 	}
 
 	sess, err := resumeSession(seed)
 	if err != nil {
-		return err
-	}
-
-	pc, err := sess.newPeerConnection(public)
-	if err != nil {
-		return err
-	}
-	defer pc.Close()
-
-	go natProbeLine(public, upnp)
-
-	errCh := make(chan error, 1)
-	var cands []iceCand
-	ice := &iceState{}
-	pc.OnICEConnectionStateChange(ice.set)
-	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		if s == webrtc.PeerConnectionStateFailed {
-			reportConnFailure(ice.get(), cands, offerCands)
-			select {
-			case errCh <- errors.New("connection failed"):
-			default:
-			}
-		}
-	})
-
-	offer := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  buildSDP(sess.Ufrag, sess.Pwd, sess.Fp, "actpass", candStrings(offerCands)),
-	}
-	if err = pc.SetRemoteDescription(offer); err != nil {
-		return err
-	}
-	answer, err := pc.CreateAnswer(nil)
-	if err != nil {
-		return err
-	}
-	gatherDone := gatherCandidates(pc, &cands)
-	if err = pc.SetLocalDescription(answer); err != nil {
-		return err
-	}
-	<-gatherDone
-
-	fmt.Printf("session %s\n", sess.Name)
-	fmt.Print("answer code:\n")
-	if err = publishCode(encodeCode(encodePayload(nil, cands)), codeFile, "answer"); err != nil {
 		return err
 	}
 
@@ -117,23 +84,79 @@ func runReceive(outDir, codeFile, public string, upnp bool) error {
 		return err
 	}
 	recv := &receiver{
-		dir:    absDir,
-		files:  make(map[uint32]*recvFile),
-		done:   make(chan struct{}),
-		errCh:  make(chan error, 1),
-		start:  time.Now(),
+		dir:   absDir,
+		files: make(map[uint32]*recvFile),
+		done:  make(chan struct{}),
+		errCh: make(chan error, 1),
+		start: time.Now(),
 	}
-	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		switch {
-		case dc.Label() == "ctrl":
-			recv.mu.Lock()
-			recv.ctrl = dc
-			recv.mu.Unlock()
-			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleCtrl(m.Data) })
-		case strings.HasPrefix(dc.Label(), "data-"):
-			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleData(dc, m.Data) })
+	ice := &iceState{}
+	var open int32
+	var pcs []*webrtc.PeerConnection
+	var allCands [][]iceCand
+
+	addLane := func(i int) error {
+		pin := ""
+		if len(pins) > 0 {
+			pin = pins[i]
 		}
-	})
+		pc, err := sess.newPeerConnection(i, pin)
+		if err != nil {
+			return err
+		}
+		pcs = append(pcs, pc)
+		pc.OnICEConnectionStateChange(ice.set)
+		pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+			if s == webrtc.PeerConnectionStateFailed && atomic.LoadInt32(&open) == 0 {
+				reportConnFailure(ice.get(), flatten(allCands), flatten(offerPcs))
+				recv.fail(errors.New("connection failed"))
+			}
+		})
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			switch {
+			case dc.Label() == "ctrl":
+				recv.mu.Lock()
+				recv.ctrl = dc
+				recv.mu.Unlock()
+				dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleCtrl(m.Data) })
+			case strings.HasPrefix(dc.Label(), "data-"):
+				atomic.AddInt32(&open, 1)
+				dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleData(dc, m.Data) })
+			}
+		})
+		ufrag, pwd := sess.creds(i)
+		offer := webrtc.SessionDescription{
+			Type: webrtc.SDPTypeOffer,
+			SDP:  buildSDP(ufrag, pwd, sess.Fp, "actpass", candStrings(offerPcs[i])),
+		}
+		if err = pc.SetRemoteDescription(offer); err != nil {
+			return err
+		}
+		answer, err := pc.CreateAnswer(nil)
+		if err != nil {
+			return err
+		}
+		var laneCands []iceCand
+		gatherDone := gatherCandidates(pc, &laneCands)
+		if err = pc.SetLocalDescription(answer); err != nil {
+			return err
+		}
+		<-gatherDone
+		allCands = append(allCands, laneCands)
+		return nil
+	}
+
+	for i := 0; i < nLanes; i++ {
+		if err = addLane(i); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("session %s\n", sess.Name)
+	fmt.Print("answer code:\n")
+	if err = publishCode(encodeCode(encodePayload(nil, allCands)), codeFile, "answer"); err != nil {
+		return err
+	}
 
 	stopTicker := make(chan struct{})
 	go func() {
@@ -158,9 +181,6 @@ func runReceive(outDir, codeFile, public string, upnp bool) error {
 	case err = <-recv.errCh:
 		close(stopTicker)
 		return err
-	case err = <-errCh:
-		close(stopTicker)
-		return err
 	}
 	close(stopTicker)
 
@@ -169,6 +189,11 @@ func runReceive(outDir, codeFile, public string, upnp bool) error {
 	recv.mu.Unlock()
 	if ctrl != nil {
 		ctrl.SendText(`{"type":"ack"}`)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	for _, pc := range pcs {
+		pc.Close()
 	}
 
 	fmt.Println()
@@ -178,7 +203,6 @@ func runReceive(outDir, codeFile, public string, upnp bool) error {
 	fmt.Printf("done: %d files (%d skipped), %s in %s (%s/s)\n",
 		recv.filesDone, recv.skipped, humanBytes(recv.got), elapsed,
 		humanBytes(int64(float64(recv.got)/elapsed.Seconds())))
-	time.Sleep(200 * time.Millisecond)
 	return nil
 }
 

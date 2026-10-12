@@ -1,8 +1,8 @@
 package main
 
 import (
-	cryptorand "crypto/rand"
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -11,9 +11,10 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand/v2"
+	"time"
+
 	"net"
 	"strconv"
-	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -21,12 +22,10 @@ import (
 const seedLen = 16
 
 type session struct {
-	Seed  []byte
-	Name  string
-	Ufrag string
-	Pwd   string
-	Fp    string
-	Cert  *webrtc.Certificate
+	Seed []byte
+	Name string
+	Fp   string
+	Cert *webrtc.Certificate
 }
 
 func newSession() (*session, error) {
@@ -50,41 +49,47 @@ func resumeSession(seed []byte) (*session, error) {
 		return nil, err
 	}
 	s := &session{
-		Seed:  seed,
-		Name:  sessionName(seed),
-		Ufrag: base64.StdEncoding.EncodeToString(derive(seed, "ice-ufrag", 6)),
-		Pwd:   base64.StdEncoding.EncodeToString(derive(seed, "ice-pwd", 18)),
-		Fp:    fps[0].Value,
-		Cert:  cert,
+		Seed: seed,
+		Name: sessionName(seed),
+		Fp:   fps[0].Value,
+		Cert: cert,
 	}
 	return s, nil
 }
 
-func (s *session) newPeerConnection(external string) (*webrtc.PeerConnection, error) {
+// creds derives the per-lane ICE credentials both sides compute identically.
+func (s *session) creds(i int) (string, string) {
+	ufrag := base64.StdEncoding.EncodeToString(derive(s.Seed, fmt.Sprintf("ice-ufrag-%d", i), 6))
+	pwd := base64.StdEncoding.EncodeToString(derive(s.Seed, fmt.Sprintf("ice-pwd-%d", i), 18))
+	return ufrag, pwd
+}
+
+func (s *session) newPeerConnection(i int, pin string) (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
-	se.SetICECredentials(s.Ufrag, s.Pwd)
+	ufrag, pwd := s.creds(i)
+	se.SetICECredentials(ufrag, pwd)
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	se.LoggerFactory = loggerFactory{}
 	// long-fat-network tuning: keep cwnd from collapsing and ramp fast
 	se.SetSCTPMaxReceiveBufferSize(4 << 20)
-	se.SetSCTPMinCwnd(1 << 20)
+	se.SetSCTPMinCwnd(2 << 20)
 	se.SetSCTPCwndCAStep(256 << 10)
 	se.EnableSCTPZeroChecksum(true)
 	cfg := webrtc.Configuration{
 		ICEServers:   []webrtc.ICEServer{{URLs: stunServers}},
 		Certificates: []webrtc.Certificate{*s.Cert},
 	}
-	if external != "" {
-		host, portS, err := net.SplitHostPort(external)
+	if pin != "" {
+		host, portS, err := net.SplitHostPort(pin)
 		if err != nil {
-			return nil, fmt.Errorf("--public: want ip:port, got %q", external)
+			return nil, fmt.Errorf("bad endpoint %q: want ip:port", pin)
 		}
 		port, err := strconv.Atoi(portS)
 		if err != nil || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("--public: bad port %q", portS)
+			return nil, fmt.Errorf("bad port %q", portS)
 		}
 		if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
-			return nil, fmt.Errorf("--public: want ipv4, got %q", host)
+			return nil, fmt.Errorf("bad ipv4 %q", host)
 		}
 		se.SetNAT1To1IPs([]string{host}, webrtc.ICECandidateTypeHost)
 		se.SetEphemeralUDPPortRange(uint16(port), uint16(port))

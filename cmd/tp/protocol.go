@@ -21,6 +21,7 @@ const (
 
 type ctrlMsg struct {
 	Type string `json:"type"`
+	N    int    `json:"n,omitempty"`
 }
 
 // announce: [type][fileID 4][size 8][mode 4][digest 16][nameLen 2][name]

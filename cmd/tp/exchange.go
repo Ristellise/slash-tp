@@ -22,7 +22,9 @@ func readCode(codeFile, kind, prompt string) (string, error) {
 		path := codeFile + "." + kind
 		for {
 			if b, err := os.ReadFile(path); err == nil {
-				return string(b), nil
+				if m := codeRe.Find(b); m != nil {
+					return string(m), nil
+				}
 			}
 			time.Sleep(200 * time.Millisecond)
 		}

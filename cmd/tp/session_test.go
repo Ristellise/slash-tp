@@ -61,27 +61,31 @@ func TestPayloadRoundTrip(t *testing.T) {
 		{typ: candSrflx, prio: 1694498815, ip: []byte{203, 0, 113, 7}, port: 49170,
 			raddr: []byte{192, 168, 1, 10}, rport: 52373},
 	}
-	code := encodeCode(encodePayload(s.Seed, cands))
-	if len(code) > 120 {
+	code := encodeCode(encodePayload(s.Seed, [][]iceCand{cands, cands}))
+	if len(code) > 240 {
 		t.Fatalf("code too long: %d", len(code))
 	}
-	seed, got, err := decodeCode("noise " + code + " noise")
+	seed, pcs, err := decodeCode("noise " + code + " noise")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(seed) != string(s.Seed) {
 		t.Fatal("seed mismatch")
 	}
+	if len(pcs) != 2 {
+		t.Fatalf("pc count mismatch: %d", len(pcs))
+	}
+	got := pcs[0]
 	if len(got) != 2 || got[0].typ != candHost || got[1].typ != candSrflx || got[1].rport != 52373 {
 		t.Fatalf("cands mismatch: %+v", got)
 	}
 
-	ansCode := encodeCode(encodePayload(nil, cands))
+	ansCode := encodeCode(encodePayload(nil, [][]iceCand{cands}))
 	seed2, got2, err := decodeCode(ansCode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(seed2) != 0 || len(got2) != 2 {
+	if len(seed2) != 0 || len(got2) != 1 || len(got2[0]) != 2 {
 		t.Fatalf("answer payload mismatch: %d %d", len(seed2), len(got2))
 	}
 }
@@ -95,11 +99,17 @@ func TestSessionDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s1.Name != s2.Name || s1.Ufrag != s2.Ufrag || s1.Pwd != s2.Pwd || s1.Fp != s2.Fp {
+	if s1.Name != s2.Name || s1.Fp != s2.Fp {
 		t.Fatal("derivation is not deterministic")
 	}
-	if len(s1.Ufrag) < 4 || len(s1.Pwd) < 22 {
-		t.Fatalf("ICE credentials too short: %d %d", len(s1.Ufrag), len(s1.Pwd))
+	u1, p1 := s1.creds(0)
+	u2, p2 := s2.creds(0)
+	u3, p3 := s1.creds(1)
+	if u1 != u2 || p1 != p2 || u1 == u3 || p1 == p3 {
+		t.Fatal("per-lane credentials wrong")
+	}
+	if len(u1) < 4 || len(p1) < 22 {
+		t.Fatalf("ICE credentials too short: %d %d", len(u1), len(p1))
 	}
 	if !strings.Contains(s1.Fp, ":") {
 		t.Fatalf("fingerprint not colonized: %q", s1.Fp)
