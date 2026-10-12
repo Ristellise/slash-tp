@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,18 @@ import (
 
 	"github.com/pion/webrtc/v4"
 )
+
+type pendingFile struct {
+	id   uint32
+	path string
+	name string
+	size int64
+}
+
+type verdict struct {
+	id   uint32
+	have bool
+}
 
 func runSend(root string, nCh int, codeFile string) error {
 	abs, err := filepath.Abs(root)
@@ -141,15 +154,13 @@ func runSend(root string, nCh int, codeFile string) error {
 	var nextID atomic.Uint32
 	var sentFiles atomic.Uint64
 	var sentBytes atomic.Int64
+	var skippedFiles atomic.Uint64
 	for _, dc := range datas {
 		wg.Add(1)
 		go func(dc *webrtc.DataChannel) {
 			defer wg.Done()
-			for p := range paths {
-				if err := sendFile(dc, abs, top, p, &nextID, &sentFiles, &sentBytes); err != nil {
-					fail(err)
-					return
-				}
+			if err := produce(dc, abs, top, paths, &nextID, &sentFiles, &skippedFiles, &sentBytes); err != nil {
+				fail(err)
 			}
 		}(dc)
 	}
@@ -197,13 +208,49 @@ func runSend(root string, nCh int, codeFile string) error {
 	close(stopTicker)
 
 	elapsed := time.Since(start).Round(time.Millisecond)
-	fmt.Printf("\rdone: %d files, %s in %s (%s/s)          \n",
-		sentFiles.Load(), humanBytes(sentBytes.Load()), elapsed,
+	fmt.Printf("\rdone: %d files (%d skipped), %s in %s (%s/s)          \n",
+		sentFiles.Load(), skippedFiles.Load(), humanBytes(sentBytes.Load()), elapsed,
 		humanBytes(int64(float64(sentBytes.Load())/elapsed.Seconds())))
 	return nil
 }
 
-func sendFile(dc *webrtc.DataChannel, root, top, path string, nextID *atomic.Uint32, sentFiles *atomic.Uint64, sentBytes *atomic.Int64) error {
+func produce(dc *webrtc.DataChannel, root, top string, paths <-chan string,
+	nextID *atomic.Uint32, sentFiles, skippedFiles *atomic.Uint64, sentBytes *atomic.Int64) error {
+	inbox := make(chan verdict, sendWindow*2)
+	dc.OnMessage(func(m webrtc.DataChannelMessage) {
+		d := m.Data
+		if len(d) == 6 && d[0] == frameVerdict {
+			inbox <- verdict{id: binary.BigEndian.Uint32(d[1:5]), have: d[5] == 1}
+		}
+	})
+
+	var pending []pendingFile
+	pathsOpen := true
+	for pathsOpen || len(pending) > 0 {
+		if pathsOpen && len(pending) < sendWindow {
+			select {
+			case p, ok := <-paths:
+				if !ok {
+					pathsOpen = false
+				} else if err := announce(dc, root, top, p, nextID, &pending); err != nil {
+					return err
+				}
+			case v := <-inbox:
+				if err := consume(dc, &pending, v, sentFiles, skippedFiles, sentBytes); err != nil {
+					return err
+				}
+			}
+		} else {
+			v := <-inbox
+			if err := consume(dc, &pending, v, sentFiles, skippedFiles, sentBytes); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func announce(dc *webrtc.DataChannel, root, top, path string, nextID *atomic.Uint32, pending *[]pendingFile) error {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return err
@@ -213,33 +260,58 @@ func sendFile(dc *webrtc.DataChannel, root, top, path string, nextID *atomic.Uin
 	if err != nil {
 		return err
 	}
-	id := nextID.Add(1) - 1
-	if err = sendThrottled(dc, announceFrame(id, name, fi.Size(), uint32(fi.Mode().Perm()))); err != nil {
+	first, last, err := fileEdgeHashes(path, fi.Size())
+	if err != nil {
 		return err
 	}
-	if fi.Size() == 0 {
-		sentFiles.Add(1)
+	id := nextID.Add(1) - 1
+	if err = sendThrottled(dc, announceFrame(uint32(id), name, fi.Size(), uint32(fi.Mode().Perm()), first, last)); err != nil {
+		return err
+	}
+	*pending = append(*pending, pendingFile{id: uint32(id), path: path, name: name, size: fi.Size()})
+	return nil
+}
+
+func consume(dc *webrtc.DataChannel, pending *[]pendingFile, v verdict,
+	sentFiles, skippedFiles *atomic.Uint64, sentBytes *atomic.Int64) error {
+	p := (*pending)[0]
+	if v.id != p.id {
+		return fmt.Errorf("verdict out of order: got %d, want %d", v.id, p.id)
+	}
+	*pending = (*pending)[1:]
+	if !v.have {
+		if err := streamFile(dc, p, sentBytes); err != nil {
+			return err
+		}
+	} else {
+		skippedFiles.Add(1)
+	}
+	sentFiles.Add(1)
+	return nil
+}
+
+func streamFile(dc *webrtc.DataChannel, p pendingFile, sentBytes *atomic.Int64) error {
+	if p.size == 0 {
 		return nil
 	}
-	fh, err := os.Open(path)
+	fh, err := os.Open(p.path)
 	if err != nil {
 		return err
 	}
 	defer fh.Close()
 	off := int64(0)
-	for off < fi.Size() {
-		n := min(int64(chunkSize), fi.Size()-off)
+	for off < p.size {
+		n := min(int64(chunkSize), p.size-off)
 		buf := make([]byte, n)
 		if _, err = io.ReadFull(fh, buf); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
+			return fmt.Errorf("%s: %w", p.name, err)
 		}
-		if err = sendThrottled(dc, chunkFrame(uint32(id), off, buf)); err != nil {
+		if err = sendThrottled(dc, chunkFrame(p.id, off, buf)); err != nil {
 			return err
 		}
 		off += n
 		sentBytes.Add(n)
 	}
-	sentFiles.Add(1)
 	return nil
 }
 

@@ -35,4 +35,19 @@ diff -r -x empty-dir "$src" "$work/dst/src"
 
 grep -q 'done:' "$work/sender.log"
 grep -q 'done:' "$work/receiver.log"
+
+# second transfer: identical tree is skipped, modified file is updated
+printf 'hello tp v2' > "$src/one.bin"
+head -c 100000 /dev/urandom > "$src/sub/deep/updated.bin"
+
+codes2="$work/codes2"
+"$bin" send --code-file "$codes2" "$src" >"$work/sender2.log" 2>&1 &
+sender2=$!
+
+"$bin" receive --code-file "$codes2" "$work/dst" >"$work/receiver2.log" 2>&1
+wait "$sender2"
+
+diff -r -x empty-dir "$src" "$work/dst/src"
+grep -Eq 'done: [0-9]+ files \([0-9]+ skipped\)' "$work/sender2.log"
+grep -q 'skipped' "$work/receiver2.log"
 echo "e2e ok"

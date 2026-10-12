@@ -26,6 +26,7 @@ type receiver struct {
 	files     map[uint32]*recvFile
 	filesSeen int
 	filesDone int
+	skipped   int
 	got       int64
 	ended     bool
 	start     time.Time
@@ -115,7 +116,7 @@ func runReceive(outDir, codeFile string) error {
 			recv.mu.Unlock()
 			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleCtrl(m.Data) })
 		case strings.HasPrefix(dc.Label(), "data-"):
-			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleData(m.Data) })
+			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleData(dc, m.Data) })
 		}
 	})
 
@@ -159,8 +160,8 @@ func runReceive(outDir, codeFile string) error {
 	recv.mu.Lock()
 	defer recv.mu.Unlock()
 	elapsed := time.Since(recv.start).Round(time.Millisecond)
-	fmt.Printf("done: %d files, %s in %s (%s/s)\n",
-		recv.filesDone, humanBytes(recv.got), elapsed,
+	fmt.Printf("done: %d files (%d skipped), %s in %s (%s/s)\n",
+		recv.filesDone, recv.skipped, humanBytes(recv.got), elapsed,
 		humanBytes(int64(float64(recv.got)/elapsed.Seconds())))
 	time.Sleep(200 * time.Millisecond)
 	return nil
@@ -180,36 +181,61 @@ func (r *receiver) handleCtrl(data []byte) {
 	}
 }
 
-func (r *receiver) handleData(data []byte) {
-	if len(data) < 13 {
-		return
-	}
-	switch data[0] {
-	case frameAnnounce:
-		if len(data) < 19 {
-			return
-		}
-		r.handleAnnounce(data)
-	case frameChunk:
+func (r *receiver) handleData(dc *webrtc.DataChannel, data []byte) {
+	switch {
+	case len(data) >= 51 && data[0] == frameAnnounce:
+		r.handleAnnounce(dc, data)
+	case len(data) >= 13 && data[0] == frameChunk:
 		r.handleChunk(data)
 	}
 }
 
-func (r *receiver) handleAnnounce(data []byte) {
+func (r *receiver) handleAnnounce(dc *webrtc.DataChannel, data []byte) {
 	id := binary.BigEndian.Uint32(data[1:5])
 	size := int64(binary.BigEndian.Uint64(data[5:13]))
 	mode := binary.BigEndian.Uint32(data[13:17])
-	nameLen := int(binary.BigEndian.Uint16(data[17:19]))
-	if len(data) < 19+nameLen {
+	var first, last [hashLen]byte
+	copy(first[:], data[17:33])
+	copy(last[:], data[33:49])
+	nameLen := int(binary.BigEndian.Uint16(data[49:51]))
+	if len(data) < 51+nameLen {
 		r.fail(errors.New("truncated announce"))
 		return
 	}
-	name := string(data[19 : 19+nameLen])
+	name := string(data[51 : 51+nameLen])
 	full := filepath.Join(r.dir, filepath.FromSlash(name))
 	if full != filepath.Clean(r.dir) && !strings.HasPrefix(full, filepath.Clean(r.dir)+string(os.PathSeparator)) {
 		r.fail(fmt.Errorf("unsafe path %q", name))
 		return
 	}
+
+	r.mu.Lock()
+	if r.files[id] != nil {
+		r.mu.Unlock()
+		r.fail(fmt.Errorf("duplicate file id %d", id))
+		return
+	}
+	r.filesSeen++
+	if r.start.IsZero() {
+		r.start = time.Now()
+	}
+	r.mu.Unlock()
+
+	if fi, err := os.Stat(full); err == nil && fi.Mode().IsRegular() && fi.Size() == size {
+		if ef, el, err := fileEdgeHashes(full, fi.Size()); err == nil && ef == first && el == last {
+			os.Chmod(full, os.FileMode(mode))
+			r.mu.Lock()
+			r.filesDone++
+			r.skipped++
+			r.checkComplete()
+			r.mu.Unlock()
+			if err = dc.Send(verdictFrame(id, true)); err != nil {
+				r.fail(err)
+			}
+			return
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		r.fail(err)
 		return
@@ -225,17 +251,7 @@ func (r *receiver) handleAnnounce(data []byte) {
 		return
 	}
 	r.mu.Lock()
-	if r.files[id] != nil {
-		f.Close()
-		r.mu.Unlock()
-		r.fail(fmt.Errorf("duplicate file id %d", id))
-		return
-	}
 	r.files[id] = &recvFile{f: f, size: size}
-	r.filesSeen++
-	if r.start.IsZero() {
-		r.start = time.Now()
-	}
 	if size == 0 {
 		f.Close()
 		delete(r.files, id)
@@ -243,6 +259,9 @@ func (r *receiver) handleAnnounce(data []byte) {
 		r.checkComplete()
 	}
 	r.mu.Unlock()
+	if err = dc.Send(verdictFrame(id, false)); err != nil {
+		r.fail(err)
+	}
 }
 
 func (r *receiver) handleChunk(data []byte) {

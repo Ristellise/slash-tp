@@ -22,7 +22,7 @@ receiver=$!
 
 answer=""
 for _ in $(seq 1 200); do
-  answer=$(grep '^tp3#' "$work/recv.log" || true)
+  answer=$(grep '^tp[0-9]#' "$work/recv.log" || true)
   [ -n "$answer" ] && break
   sleep 0.3
 done

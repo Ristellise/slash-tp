@@ -55,6 +55,7 @@ tp receive [--code-file F] [outdir]
 ## How it works
 
 - Files are streamed as they are discovered: each `data` channel carries `announce` + `chunk` frames (`type | fileID | offset | payload`) for its files, so there is no folder pre-scan and transfers start immediately regardless of tree size. Each channel is throttled on SCTP buffered amount. The `ctrl` channel only carries end/ack.
+- Identical files are skipped: announces carry sha-256 hashes of the first and last 60KB of each file; if the receiver already has a file with the same size and edge hashes, the bytes are not sent. Re-running a transfer over an existing tree only moves new and changed files.
 - The session code is a magic string: a 16-byte random seed plus the ICE candidates, Crockford-base32 encoded (~110-300 chars). Both sides derive the ICE credentials, DTLS certificate, fingerprint and session name from the seed — so the SDP itself never travels, and possession of the code is the session secret. No signaling server needed.
 - Regular files only; symlinks and empty directories are skipped; file permissions are preserved. Interrupted transfers leave partial files behind.
 
