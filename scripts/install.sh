@@ -25,26 +25,20 @@ case "$arch" in
 esac
 
 asset="tp-${os}-${arch}"
-api="https://api.github.com/repos/$repo/releases/latest"
-urls=$(curl -fsSL "$api" | grep -o 'https://[^"]*releases/download/[^"]*') || {
-  echo "tp: no release found at $repo — publish one first (git tag v*)"
-  exit 1
-}
-url=$(echo "$urls" | grep "/${asset}\$" | head -1)
-sums=$(echo "$urls" | grep "/checksums.txt\$" | head -1)
-[ -n "$url" ] || { echo "tp: no binary for $os/$arch in the latest release"; exit 1; }
+base="https://github.com/$repo/releases/latest/download"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL -o "$tmp/tp" "$url"
-if [ -n "$sums" ]; then
-  sum=$(curl -fsSL "$sums" | grep " ${asset}\$" | awk '{print $1}')
-  if [ -n "$sum" ]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      (cd "$tmp" && echo "$sum  tp" | sha256sum -c -)
-    else
-      (cd "$tmp" && echo "$sum  tp" | shasum -a 256 -c -)
-    fi
+curl -fsSL -o "$tmp/tp" "$base/$asset" || {
+  echo "tp: no $asset in the latest release of $repo — is a release published? (git tag v*)"
+  exit 1
+}
+sum=$(curl -fsSL "$base/checksums.txt" | grep " ${asset}\$" | awk '{print $1}') || true
+if [ -n "$sum" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$tmp" && echo "$sum  tp" | sha256sum -c -)
+  else
+    (cd "$tmp" && echo "$sum  tp" | shasum -a 256 -c -)
   fi
 fi
 
