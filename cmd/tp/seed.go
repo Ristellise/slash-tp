@@ -61,6 +61,7 @@ func resumeSession(seed []byte) (*session, error) {
 func (s *session) newPeerConnection() (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
 	se.SetICECredentials(s.Ufrag, s.Pwd)
+	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	se.LoggerFactory = loggerFactory{}
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 	return api.NewPeerConnection(webrtc.Configuration{
