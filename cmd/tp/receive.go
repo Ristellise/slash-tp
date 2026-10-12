@@ -47,7 +47,7 @@ func (r *receiver) fail(err error) {
 	}
 }
 
-func runReceive(outDir, codeFile string) error {
+func runReceive(outDir, codeFile, public string) error {
 	offerCode, err := readCode(codeFile, "offer", "paste offer code: ")
 	if err != nil {
 		return err
@@ -61,13 +61,13 @@ func runReceive(outDir, codeFile string) error {
 		return err
 	}
 
-	pc, err := sess.newPeerConnection()
+	pc, err := sess.newPeerConnection(public)
 	if err != nil {
 		return err
 	}
 	defer pc.Close()
 
-	go func() { fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT()) }()
+	go natProbeLine(public)
 
 	errCh := make(chan error, 1)
 	var cands []iceCand

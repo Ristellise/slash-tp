@@ -103,6 +103,14 @@ func reportConnFailure(lastICE string, local, remote []iceCand) {
 	}
 }
 
+func natProbeLine(public string) {
+	if public != "" {
+		fmt.Fprintln(os.Stderr, "tp: reachable at", public, "— ensure UDP is forwarded to this port")
+		return
+	}
+	fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT())
+}
+
 func hasSrflx(cs []iceCand) bool {
 	for _, c := range cs {
 		if c.typ == candSrflx {

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand/v2"
+	"net"
+	"strconv"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -58,16 +60,33 @@ func resumeSession(seed []byte) (*session, error) {
 	return s, nil
 }
 
-func (s *session) newPeerConnection() (*webrtc.PeerConnection, error) {
+func (s *session) newPeerConnection(external string) (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
 	se.SetICECredentials(s.Ufrag, s.Pwd)
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	se.LoggerFactory = loggerFactory{}
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
-	return api.NewPeerConnection(webrtc.Configuration{
+	cfg := webrtc.Configuration{
 		ICEServers:   []webrtc.ICEServer{{URLs: stunServers}},
 		Certificates: []webrtc.Certificate{*s.Cert},
-	})
+	}
+	if external != "" {
+		host, portS, err := net.SplitHostPort(external)
+		if err != nil {
+			return nil, fmt.Errorf("--public: want ip:port, got %q", external)
+		}
+		port, err := strconv.Atoi(portS)
+		if err != nil || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("--public: bad port %q", portS)
+		}
+		if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("--public: want ipv4, got %q", host)
+		}
+		se.SetNAT1To1IPs([]string{host}, webrtc.ICECandidateTypeHost)
+		se.SetEphemeralUDPPortRange(uint16(port), uint16(port))
+		cfg.ICEServers = nil
+	}
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	return api.NewPeerConnection(cfg)
 }
 
 func derive(seed []byte, label string, n int) []byte {

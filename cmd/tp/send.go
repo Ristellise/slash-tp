@@ -28,7 +28,7 @@ type verdict struct {
 	have bool
 }
 
-func runSend(root string, nCh int, codeFile string) error {
+func runSend(root string, nCh int, codeFile, public string) error {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return err
@@ -46,13 +46,13 @@ func runSend(root string, nCh int, codeFile string) error {
 	if err != nil {
 		return err
 	}
-	pc, err := sess.newPeerConnection()
+	pc, err := sess.newPeerConnection(public)
 	if err != nil {
 		return err
 	}
 	defer pc.Close()
 
-	go func() { fmt.Fprintln(os.Stderr, "tp: local nat:", probeNAT()) }()
+	go natProbeLine(public)
 
 	errCh := make(chan error, 1)
 	fail := func(err error) {
