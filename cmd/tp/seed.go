@@ -65,7 +65,7 @@ func (s *session) newPeerConnection() (*webrtc.PeerConnection, error) {
 	se.LoggerFactory = loggerFactory{}
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 	return api.NewPeerConnection(webrtc.Configuration{
-		ICEServers:   []webrtc.ICEServer{{URLs: []string{stunURL}}},
+		ICEServers:   []webrtc.ICEServer{{URLs: stunServers}},
 		Certificates: []webrtc.Certificate{*s.Cert},
 	})
 }

@@ -12,8 +12,13 @@ import (
 
 const (
 	codeVersion = "tp1"
-	stunURL     = "stun:stun.l.google.com:19302"
 )
+
+var stunServers = []string{
+	"stun:stun.l.google.com:19302",
+	"stun:stun1.l.google.com:19302",
+	"stun:stun2.l.google.com:19302",
+}
 
 func buildSDP(ufrag, pwd, fp, setup string, cands []string) string {
 	var b strings.Builder
@@ -74,34 +79,55 @@ func (i *iceState) get() string {
 func reportConnFailure(lastICE string, local, remote []iceCand) {
 	fmt.Fprintln(os.Stderr, "tp: connection failed — diagnostics:")
 	fmt.Fprintf(os.Stderr, "  last ice state: %s\n", lastICE)
-	fmt.Fprintln(os.Stderr, "  local candidates:")
-	for _, c := range local {
-		fmt.Fprintf(os.Stderr, "    %-5s %s:%d\n", candTypeNames[c.typ], c.ip, c.port)
-	}
-	fmt.Fprintln(os.Stderr, "  remote candidates:")
-	for _, c := range remote {
-		fmt.Fprintf(os.Stderr, "    %-5s %s:%d\n", candTypeNames[c.typ], c.ip, c.port)
-	}
-	var localSrflx, remoteSrflx bool
-	for _, c := range local {
-		if c.typ == candSrflx {
-			localSrflx = true
+	dump := func(label string, cs []iceCand) {
+		fmt.Fprintf(os.Stderr, "  %s candidates:\n", label)
+		for _, c := range cs {
+			if (c.typ == candSrflx || c.typ == candPrflx) && c.raddr != nil {
+				fmt.Fprintf(os.Stderr, "    %-5s %s:%d (base %s:%d)\n", candTypeNames[c.typ], c.ip, c.port, c.raddr, c.rport)
+			} else {
+				fmt.Fprintf(os.Stderr, "    %-5s %s:%d\n", candTypeNames[c.typ], c.ip, c.port)
+			}
 		}
 	}
-	for _, c := range remote {
-		if c.typ == candSrflx {
-			remoteSrflx = true
-		}
-	}
+	dump("local", local)
+	dump("remote", remote)
 	fmt.Fprintln(os.Stderr, "  likely cause:")
 	switch {
 	case len(remote) == 0:
 		fmt.Fprintln(os.Stderr, "    no remote candidates in the pasted code — it may be truncated or from an incompatible tp")
-	case !localSrflx || !remoteSrflx:
+	case !hasSrflx(local) || !hasSrflx(remote):
 		fmt.Fprintln(os.Stderr, "    a peer has no srflx candidate (STUN unreachable) — direct connection only works on the same LAN")
+	case symmetricNAT(local) || symmetricNAT(remote):
+		fmt.Fprintln(os.Stderr, "    symmetric NAT confirmed (mapped ports differ across STUN servers) —")
+		fmt.Fprintln(os.Stderr, "    direct P2P cannot traverse this without a relay, and tp has none by design")
 	default:
-		fmt.Fprintln(os.Stderr, "    symmetric NAT on either side — tp is P2P-only (no TURN relay); try the same LAN or a port-forward")
+		fmt.Fprintln(os.Stderr, "    both NATs look endpoint-independent (same mapped port across STUN servers) —")
+		fmt.Fprintln(os.Stderr, "    the peer checks are likely dropped by a firewall (e.g. a cloud security group blocking inbound UDP)")
 	}
+}
+
+func hasSrflx(cs []iceCand) bool {
+	for _, c := range cs {
+		if c.typ == candSrflx {
+			return true
+		}
+	}
+	return false
+}
+
+func symmetricNAT(cs []iceCand) bool {
+	ports := make(map[string]uint16)
+	for _, c := range cs {
+		if c.typ != candSrflx {
+			continue
+		}
+		base := c.raddr.String()
+		if p, ok := ports[base]; ok && p != c.port {
+			return true
+		}
+		ports[base] = c.port
+	}
+	return false
 }
 
 type errLogger struct{ scope string }
