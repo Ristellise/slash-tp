@@ -27,16 +27,16 @@ func init() {
 	}
 }
 
-func generateSessionName() string {
-	tpl := nameTemplates[rand.IntN(len(nameTemplates))]
+func generateSessionName(rng *rand.Rand) string {
+	tpl := nameTemplates[rng.IntN(len(nameTemplates))]
 	parts := strings.Split(tpl, "+")
 	for i, tag := range parts {
 		switch tag {
 		case "dN":
-			parts[i] = fmt.Sprint(rand.IntN(101))
+			parts[i] = fmt.Sprint(rng.IntN(101))
 		default:
 			words := namesDict[tag]
-			parts[i] = words[rand.IntN(len(words))]
+			parts[i] = words[rng.IntN(len(words))]
 		}
 	}
 	return strings.Join(parts, "-")

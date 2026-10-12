@@ -51,12 +51,16 @@ func runReceive(outDir, codeFile string) error {
 	if err != nil {
 		return err
 	}
-	name, payload, err := decodeCode(offerCode)
+	seed, offerCands, err := decodeCode(offerCode)
+	if err != nil {
+		return err
+	}
+	sess, err := resumeSession(seed)
 	if err != nil {
 		return err
 	}
 
-	pc, err := newPeerConnection()
+	pc, err := sess.newPeerConnection()
 	if err != nil {
 		return err
 	}
@@ -72,31 +76,27 @@ func runReceive(outDir, codeFile string) error {
 		}
 	})
 
-	if err = pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: buildSDP(payload)}); err != nil {
+	offer := webrtc.SessionDescription{
+		Type: webrtc.SDPTypeOffer,
+		SDP:  buildSDP(sess.Ufrag, sess.Pwd, sess.Fp, "actpass", candStrings(offerCands)),
+	}
+	if err = pc.SetRemoteDescription(offer); err != nil {
 		return err
 	}
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
 		return err
 	}
-	var cands []string
+	var cands []iceCand
 	gatherDone := gatherCandidates(pc, &cands)
 	if err = pc.SetLocalDescription(answer); err != nil {
 		return err
 	}
 	<-gatherDone
 
-	ufrag, pwd, fp, setup, err := extractSDP(answer.SDP)
-	if err != nil {
-		return err
-	}
-	answerCode, err := encodeCode(name, sdpPayload{U: ufrag, P: pwd, F: fp, S: setup, C: cands})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("session %s\n", name)
+	fmt.Printf("session %s\n", sess.Name)
 	fmt.Print("answer code:\n")
-	if err = publishCode(answerCode, codeFile, "answer"); err != nil {
+	if err = publishCode(encodeCode(encodePayload(nil, cands)), codeFile, "answer"); err != nil {
 		return err
 	}
 
