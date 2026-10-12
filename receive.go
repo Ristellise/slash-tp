@@ -1,10 +1,10 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,18 +21,18 @@ type recvFile struct {
 }
 
 type receiver struct {
-	mu         sync.Mutex
-	dir        string
-	files      map[uint32]*recvFile
-	total      int64
-	remaining  int64
-	filesDone  int
-	filesTotal int
-	ctrl       *webrtc.DataChannel
-	start      time.Time
-	done       chan struct{}
-	doneOnce   sync.Once
-	errCh      chan error
+	mu        sync.Mutex
+	dir       string
+	files     map[uint32]*recvFile
+	filesSeen int
+	filesDone int
+	got       int64
+	ended     bool
+	start     time.Time
+	ctrl      *webrtc.DataChannel
+	done      chan struct{}
+	doneOnce  sync.Once
+	errCh     chan error
 }
 
 func (r *receiver) complete() {
@@ -101,10 +101,11 @@ func runReceive(outDir, codeFile string) error {
 	}
 
 	recv := &receiver{
-		files: make(map[uint32]*recvFile),
-		dir:   outDir,
-		done:  make(chan struct{}),
-		errCh: make(chan error, 1),
+		dir:    outDir,
+		files:  make(map[uint32]*recvFile),
+		done:   make(chan struct{}),
+		errCh:  make(chan error, 1),
+		start:  time.Now(),
 	}
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		switch {
@@ -114,7 +115,7 @@ func runReceive(outDir, codeFile string) error {
 			recv.mu.Unlock()
 			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleCtrl(m.Data) })
 		case strings.HasPrefix(dc.Label(), "data-"):
-			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleFrame(m.Data) })
+			dc.OnMessage(func(m webrtc.DataChannelMessage) { recv.handleData(m.Data) })
 		}
 	})
 
@@ -126,13 +127,10 @@ func runReceive(outDir, codeFile string) error {
 			select {
 			case <-t.C:
 				recv.mu.Lock()
-				line := fmt.Sprintf("\r%d/%d files  %s / %s", recv.filesDone, recv.filesTotal,
-					humanBytes(recv.total-recv.remaining), humanBytes(recv.total))
-				if !recv.start.IsZero() && recv.total > 0 {
-					line += fmt.Sprintf("  (%s/s)", humanBytes(int64(float64(recv.total-recv.remaining)/time.Since(recv.start).Seconds())))
-				}
+				fmt.Printf("\r%d files, %s (%s/s)", recv.filesDone,
+					humanBytes(recv.got),
+					humanBytes(int64(float64(recv.got)/time.Since(recv.start).Seconds())))
 				recv.mu.Unlock()
-				fmt.Print(line)
 			case <-stopTicker:
 				return
 			}
@@ -158,87 +156,123 @@ func runReceive(outDir, codeFile string) error {
 	}
 
 	fmt.Println()
-	recv.summary()
+	recv.mu.Lock()
+	defer recv.mu.Unlock()
+	elapsed := time.Since(recv.start).Round(time.Millisecond)
+	fmt.Printf("done: %d files, %s in %s (%s/s)\n",
+		recv.filesDone, humanBytes(recv.got), elapsed,
+		humanBytes(int64(float64(recv.got)/elapsed.Seconds())))
 	time.Sleep(200 * time.Millisecond)
 	return nil
 }
 
 func (r *receiver) handleCtrl(data []byte) {
-	var m manifestMsg
-	if err := json.Unmarshal(data, &m); err != nil || m.Type != "manifest" {
+	var msg ctrlMsg
+	if err := json.Unmarshal(data, &msg); err != nil || msg.Type != "end" {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	root := filepath.Join(r.dir, filepath.FromSlash(m.Top))
-	base := filepath.Clean(r.dir) + string(os.PathSeparator)
-	for _, fe := range m.Files {
-		full := filepath.Join(root, filepath.FromSlash(fe.Name))
-		if full != filepath.Clean(r.dir) && !strings.HasPrefix(full, base) {
-			r.fail(fmt.Errorf("skipping unsafe path %q", fe.Name))
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			r.fail(err)
-			return
-		}
-		f, err := os.OpenFile(full, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-		if err != nil {
-			r.fail(err)
-			return
-		}
-		if err = f.Chmod(fs.FileMode(fe.Mode)); err != nil {
-			f.Close()
-			r.fail(err)
-			return
-		}
-		r.files[fe.ID] = &recvFile{f: f, size: fe.Size}
-		r.total += fe.Size
-		r.remaining += fe.Size
-		r.filesTotal++
-	}
-	r.start = time.Now()
-	if r.remaining == 0 {
+	r.ended = true
+	ok := r.filesDone == r.filesSeen
+	r.mu.Unlock()
+	if ok {
 		r.complete()
-	}
-	if r.ctrl != nil {
-		r.ctrl.SendText(`{"type":"ready"}`)
 	}
 }
 
-func (r *receiver) handleFrame(data []byte) {
-	if len(data) <= frameHeader {
+func (r *receiver) handleData(data []byte) {
+	if len(data) < 13 {
 		return
 	}
-	id, off := frameGet(data)
-	r.mu.Lock()
-	rf, ok := r.files[id]
-	if ok {
-		n, err := rf.f.WriteAt(data[frameHeader:], off)
-		if err != nil {
-			r.fail(err)
-			r.mu.Unlock()
+	switch data[0] {
+	case frameAnnounce:
+		if len(data) < 19 {
 			return
 		}
-		r.remaining -= int64(n)
-		rf.got += int64(n)
-		if rf.got == rf.size {
-			r.filesDone++
-		}
-		if r.remaining <= 0 {
-			r.complete()
-		}
+		r.handleAnnounce(data)
+	case frameChunk:
+		r.handleChunk(data)
+	}
+}
+
+func (r *receiver) handleAnnounce(data []byte) {
+	id := binary.BigEndian.Uint32(data[1:5])
+	size := int64(binary.BigEndian.Uint64(data[5:13]))
+	mode := binary.BigEndian.Uint32(data[13:17])
+	nameLen := int(binary.BigEndian.Uint16(data[17:19]))
+	if len(data) < 19+nameLen {
+		r.fail(errors.New("truncated announce"))
+		return
+	}
+	name := string(data[19 : 19+nameLen])
+	full := filepath.Join(r.dir, filepath.FromSlash(name))
+	if full != filepath.Clean(r.dir) && !strings.HasPrefix(full, filepath.Clean(r.dir)+string(os.PathSeparator)) {
+		r.fail(fmt.Errorf("unsafe path %q", name))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		r.fail(err)
+		return
+	}
+	f, err := os.OpenFile(full, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		r.fail(err)
+		return
+	}
+	if err = f.Chmod(os.FileMode(mode)); err != nil {
+		f.Close()
+		r.fail(err)
+		return
+	}
+	r.mu.Lock()
+	if r.files[id] != nil {
+		f.Close()
+		r.mu.Unlock()
+		r.fail(fmt.Errorf("duplicate file id %d", id))
+		return
+	}
+	r.files[id] = &recvFile{f: f, size: size}
+	r.filesSeen++
+	if r.start.IsZero() {
+		r.start = time.Now()
+	}
+	if size == 0 {
+		f.Close()
+		delete(r.files, id)
+		r.filesDone++
+		r.checkComplete()
 	}
 	r.mu.Unlock()
 }
 
-func (r *receiver) summary() {
+func (r *receiver) handleChunk(data []byte) {
+	id := binary.BigEndian.Uint32(data[1:5])
+	off := int64(binary.BigEndian.Uint64(data[5:13]))
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	elapsed := time.Since(r.start).Round(time.Millisecond)
-	speed := humanBytes(0)
-	if elapsed > 0 && r.total > 0 {
-		speed = humanBytes(int64(float64(r.total) / elapsed.Seconds()))
+	rf := r.files[id]
+	if rf == nil {
+		r.mu.Unlock()
+		return
 	}
-	fmt.Printf("done: %d files, %s in %s (%s/s)\n", r.filesTotal, humanBytes(r.total), elapsed, speed)
+	n, err := rf.f.WriteAt(data[13:], off)
+	if err != nil {
+		r.mu.Unlock()
+		r.fail(err)
+		return
+	}
+	rf.got += int64(n)
+	r.got += int64(n)
+	if rf.got == rf.size {
+		rf.f.Close()
+		delete(r.files, id)
+		r.filesDone++
+		r.checkComplete()
+	}
+	r.mu.Unlock()
+}
+
+func (r *receiver) checkComplete() {
+	if r.ended && r.filesDone == r.filesSeen {
+		r.complete()
+	}
 }

@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	codeVersion = "tp2"
+	codeVersion = "tp3"
 	stunURL     = "stun:stun.l.google.com:19302"
 )
 

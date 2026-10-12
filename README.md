@@ -54,7 +54,7 @@ tp receive [--code-file F] [outdir]
 
 ## How it works
 
-- One `ctrl` data channel carries a JSON manifest + acks; N `data` channels carry binary chunk frames (`fileID | offset | payload`), striped across channels for speed. Each channel is throttled on SCTP buffered amount.
+- Files are streamed as they are discovered: each `data` channel carries `announce` + `chunk` frames (`type | fileID | offset | payload`) for its files, so there is no folder pre-scan and transfers start immediately regardless of tree size. Each channel is throttled on SCTP buffered amount. The `ctrl` channel only carries end/ack.
 - The session code is a magic string: a 16-byte random seed plus the ICE candidates, Crockford-base32 encoded (~110-300 chars). Both sides derive the ICE credentials, DTLS certificate, fingerprint and session name from the seed — so the SDP itself never travels, and possession of the code is the session secret. No signaling server needed.
 - Regular files only; symlinks and empty directories are skipped; file permissions are preserved. Interrupted transfers leave partial files behind.
 

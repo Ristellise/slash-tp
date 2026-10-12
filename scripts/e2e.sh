@@ -16,6 +16,13 @@ head -c 9000000 /dev/urandom > "$src/sub/three.bin"
 head -c 1000000 /dev/urandom > "$src/ファイル です.txt"
 chmod 755 "$src/one.bin"
 
+many="$src/many"
+mkdir -p "$many"
+for i in $(seq 1 2000); do
+  printf 'file %d' "$i" > "$many/f$i.txt"
+done
+head -c 3000000 /dev/urandom > "$many/bulk.bin"
+
 codes="$work/codes"
 "$bin" send --code-file "$codes" "$src" >"$work/sender.log" 2>&1 &
 sender=$!

@@ -29,15 +29,6 @@ func runSend(root string, nCh int, codeFile string) error {
 	}
 	top := filepath.Base(abs)
 
-	files, err := walkFiles(abs)
-	if err != nil {
-		return err
-	}
-	var total int64
-	for _, f := range files {
-		total += f.Size
-	}
-
 	sess, err := newSession()
 	if err != nil {
 		return err
@@ -72,17 +63,12 @@ func runSend(root string, nCh int, codeFile string) error {
 		}
 	}
 
-	var readyOnce, ackOnce sync.Once
-	readyCh, ackCh := make(chan struct{}), make(chan struct{})
+	var ackOnce sync.Once
+	ackCh := make(chan struct{})
 	ctrl.OnMessage(func(m webrtc.DataChannelMessage) {
 		var msg ctrlMsg
-		if json.Unmarshal(m.Data, &msg) == nil {
-			switch msg.Type {
-			case "ready":
-				readyOnce.Do(func() { close(readyCh) })
-			case "ack":
-				ackOnce.Do(func() { close(ackCh) })
-			}
+		if json.Unmarshal(m.Data, &msg) == nil && msg.Type == "ack" {
+			ackOnce.Do(func() { close(ackCh) })
 		}
 	})
 
@@ -106,7 +92,7 @@ func runSend(root string, nCh int, codeFile string) error {
 
 	code := encodeCode(encodePayload(sess.Seed, cands))
 
-	fmt.Printf("session %s  (%d files, %s)\n", sess.Name, len(files), humanBytes(total))
+	fmt.Printf("session %s  (%s)\n", sess.Name, root)
 	fmt.Print("offer code:\n")
 	if err = publishCode(code, codeFile, "offer"); err != nil {
 		return err
@@ -132,61 +118,35 @@ func runSend(root string, nCh int, codeFile string) error {
 		<-c
 	}
 
-	manifest := manifestMsg{Type: "manifest", Top: top, Chunk: chunkSize, Files: files}
-	if raw, err := json.Marshal(manifest); err == nil {
-		if err = ctrl.Send(raw); err != nil {
-			return err
-		}
-	}
-	select {
-	case <-readyCh:
-	case err = <-errCh:
-		return err
-	}
-
 	start := time.Now()
-	var queued atomic.Int64
-	tasks := make(chan []byte, nCh*4)
-	prodErr := make(chan error, 1)
+	paths := make(chan string, 64)
+	walkErr := make(chan error, 1)
 	go func() {
-		defer close(tasks)
-		for _, fe := range files {
-			if fe.Size == 0 {
-				continue
-			}
-			fh, err := os.Open(filepath.Join(abs, filepath.FromSlash(fe.Name)))
+		defer close(paths)
+		err := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				prodErr <- err
-				return
+				return err
 			}
-			off := int64(0)
-			for off < fe.Size {
-				n := min(int64(chunkSize), fe.Size-off)
-				frame := make([]byte, frameHeader+n)
-				framePut(frame, fe.ID, off)
-				if _, err = io.ReadFull(fh, frame[frameHeader:]); err != nil {
-					fh.Close()
-					prodErr <- fmt.Errorf("%s: %w", fe.Name, err)
-					return
-				}
-				tasks <- frame
-				queued.Add(n)
-				off += n
+			if d.Type().IsRegular() {
+				paths <- p
 			}
-			fh.Close()
+			return nil
+		})
+		if err != nil {
+			walkErr <- err
 		}
 	}()
 
 	var wg sync.WaitGroup
+	var nextID atomic.Uint32
+	var sentFiles atomic.Uint64
+	var sentBytes atomic.Int64
 	for _, dc := range datas {
 		wg.Add(1)
 		go func(dc *webrtc.DataChannel) {
 			defer wg.Done()
-			for frame := range tasks {
-				for dc.BufferedAmount() > bufThreshold {
-					time.Sleep(2 * time.Millisecond)
-				}
-				if err := dc.Send(frame); err != nil {
+			for p := range paths {
+				if err := sendFile(dc, abs, top, p, &nextID, &sentFiles, &sentBytes); err != nil {
 					fail(err)
 					return
 				}
@@ -201,12 +161,9 @@ func runSend(root string, nCh int, codeFile string) error {
 		for {
 			select {
 			case <-t.C:
-				q := queued.Load()
-				line := fmt.Sprintf("\rsent %s / %s", humanBytes(q), humanBytes(total))
-				if total > 0 {
-					line += fmt.Sprintf(" (%.0f%%)", 100*float64(q)/float64(total))
-				}
-				fmt.Print(line)
+				fmt.Printf("\rsent %d files, %s (%s/s)",
+					sentFiles.Load(), humanBytes(sentBytes.Load()),
+					humanBytes(int64(float64(sentBytes.Load())/time.Since(start).Seconds())))
 			case <-stopTicker:
 				return
 			}
@@ -220,7 +177,7 @@ func runSend(root string, nCh int, codeFile string) error {
 	}()
 	select {
 	case <-streamDone:
-	case err = <-prodErr:
+	case err = <-walkErr:
 		close(stopTicker)
 		return err
 	case err = <-errCh:
@@ -228,6 +185,9 @@ func runSend(root string, nCh int, codeFile string) error {
 		return err
 	}
 
+	if err = ctrl.SendText(`{"type":"end"}`); err != nil {
+		return err
+	}
 	select {
 	case <-ackCh:
 	case err = <-errCh:
@@ -236,38 +196,56 @@ func runSend(root string, nCh int, codeFile string) error {
 	}
 	close(stopTicker)
 
-	elapsed := time.Since(start)
+	elapsed := time.Since(start).Round(time.Millisecond)
 	fmt.Printf("\rdone: %d files, %s in %s (%s/s)          \n",
-		len(files), humanBytes(total), elapsed.Round(time.Millisecond), humanBytes(int64(float64(total)/elapsed.Seconds())))
+		sentFiles.Load(), humanBytes(sentBytes.Load()), elapsed,
+		humanBytes(int64(float64(sentBytes.Load())/elapsed.Seconds())))
 	return nil
 }
 
-func walkFiles(root string) ([]fileEntry, error) {
-	var out []fileEntry
-	id := uint32(0)
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		out = append(out, fileEntry{
-			ID:   id,
-			Name: filepath.ToSlash(rel),
-			Size: fi.Size(),
-			Mode: uint32(fi.Mode().Perm()),
-		})
-		id++
+func sendFile(dc *webrtc.DataChannel, root, top, path string, nextID *atomic.Uint32, sentFiles *atomic.Uint64, sentBytes *atomic.Int64) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	name := filepath.ToSlash(filepath.Join(top, rel))
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	id := nextID.Add(1) - 1
+	if err = sendThrottled(dc, announceFrame(id, name, fi.Size(), uint32(fi.Mode().Perm()))); err != nil {
+		return err
+	}
+	if fi.Size() == 0 {
+		sentFiles.Add(1)
 		return nil
-	})
-	return out, err
+	}
+	fh, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	off := int64(0)
+	for off < fi.Size() {
+		n := min(int64(chunkSize), fi.Size()-off)
+		buf := make([]byte, n)
+		if _, err = io.ReadFull(fh, buf); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if err = sendThrottled(dc, chunkFrame(uint32(id), off, buf)); err != nil {
+			return err
+		}
+		off += n
+		sentBytes.Add(n)
+	}
+	sentFiles.Add(1)
+	return nil
+}
+
+func sendThrottled(dc *webrtc.DataChannel, frame []byte) error {
+	for dc.BufferedAmount() > bufThreshold {
+		time.Sleep(2 * time.Millisecond)
+	}
+	return dc.Send(frame)
 }
