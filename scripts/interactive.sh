@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-bin="$PWD/tp"
+bin=${TP_BIN:-"$PWD/tp"}
 
 head -c 5000000 /dev/urandom > "$work/single"
 chmod 640 "$work/single"

@@ -6,11 +6,15 @@ import (
 	"os"
 )
 
+var version = "dev"
+
 const usage = `tp — peer-to-peer file & folder transfer over WebRTC data channels
 
 Usage:
   tp send   [-c N] [--code-file F] <path>
   tp receive [--code-file F] [outdir]
+  tp version
+
 
 send   offers <path> (file or folder, streamed recursively) and prints a
        session code; paste the receiver's answer code when prompted.
@@ -66,6 +70,9 @@ func run(args []string) error {
 			out = fs.Arg(0)
 		}
 		return runReceive(out, *codeFile)
+	case "version":
+		fmt.Println("tp", version)
+		return nil
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
