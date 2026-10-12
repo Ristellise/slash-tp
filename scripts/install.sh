@@ -48,9 +48,9 @@ if [ -z "$bindir" ]; then
     bindir=/usr/local/bin
   else
     bindir=$HOME/.local/bin
-    mkdir -p "$bindir"
   fi
 fi
+mkdir -p "$bindir"
 install -m 755 "$tmp/tp" "$bindir/tp"
 echo "installed: $bindir/tp ($("$bindir/tp" version))"
 case ":$PATH:" in
