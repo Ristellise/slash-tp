@@ -29,11 +29,11 @@ base="https://github.com/$repo/releases/latest/download"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL -o "$tmp/tp" "$base/$asset" || {
+curl -fsSL --retry 5 --retry-delay 2 -o "$tmp/tp" "$base/$asset" || {
   echo "tp: no $asset in the latest release of $repo — is a release published? (git tag v*)"
   exit 1
 }
-sum=$(curl -fsSL "$base/checksums.txt" | grep " ${asset}\$" | awk '{print $1}') || true
+sum=$(curl -fsSL --retry 5 --retry-delay 2 "$base/checksums.txt" | grep " ${asset}\$" | awk '{print $1}') || true
 if [ -n "$sum" ]; then
   if command -v sha256sum >/dev/null 2>&1; then
     (cd "$tmp" && echo "$sum  tp" | sha256sum -c -)
