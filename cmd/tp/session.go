@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 
+	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -49,3 +52,79 @@ func gatherCandidates(pc *webrtc.PeerConnection, out *[]iceCand) <-chan struct{}
 	})
 	return done
 }
+
+type iceState struct {
+	mu sync.Mutex
+	s  string
+}
+
+func (i *iceState) set(s webrtc.ICEConnectionState) {
+	i.mu.Lock()
+	i.s = s.String()
+	i.mu.Unlock()
+	fmt.Fprintln(os.Stderr, "tp: ice:", s)
+}
+
+func (i *iceState) get() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.s
+}
+
+func reportConnFailure(lastICE string, local, remote []iceCand) {
+	fmt.Fprintln(os.Stderr, "tp: connection failed — diagnostics:")
+	fmt.Fprintf(os.Stderr, "  last ice state: %s\n", lastICE)
+	fmt.Fprintln(os.Stderr, "  local candidates:")
+	for _, c := range local {
+		fmt.Fprintf(os.Stderr, "    %-5s %s:%d\n", candTypeNames[c.typ], c.ip, c.port)
+	}
+	fmt.Fprintln(os.Stderr, "  remote candidates:")
+	for _, c := range remote {
+		fmt.Fprintf(os.Stderr, "    %-5s %s:%d\n", candTypeNames[c.typ], c.ip, c.port)
+	}
+	var localSrflx, remoteSrflx bool
+	for _, c := range local {
+		if c.typ == candSrflx {
+			localSrflx = true
+		}
+	}
+	for _, c := range remote {
+		if c.typ == candSrflx {
+			remoteSrflx = true
+		}
+	}
+	fmt.Fprintln(os.Stderr, "  likely cause:")
+	switch {
+	case len(remote) == 0:
+		fmt.Fprintln(os.Stderr, "    no remote candidates in the pasted code — it may be truncated or from an incompatible tp")
+	case !localSrflx || !remoteSrflx:
+		fmt.Fprintln(os.Stderr, "    a peer has no srflx candidate (STUN unreachable) — direct connection only works on the same LAN")
+	default:
+		fmt.Fprintln(os.Stderr, "    symmetric NAT on either side — tp is P2P-only (no TURN relay); try the same LAN or a port-forward")
+	}
+}
+
+type errLogger struct{ scope string }
+
+func (l errLogger) Trace(msg string)                  {}
+func (l errLogger) Tracef(format string, args ...any) {}
+func (l errLogger) Debug(msg string)                  {}
+func (l errLogger) Debugf(format string, args ...any) {}
+func (l errLogger) Info(msg string)                   {}
+func (l errLogger) Infof(format string, args ...any)  {}
+func (l errLogger) Warn(msg string) {
+	fmt.Fprintln(os.Stderr, "tp: ["+l.scope+"]", msg)
+}
+func (l errLogger) Warnf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "tp: ["+l.scope+"] "+format+"\n", args...)
+}
+func (l errLogger) Error(msg string) {
+	fmt.Fprintln(os.Stderr, "tp: ["+l.scope+"]", msg)
+}
+func (l errLogger) Errorf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "tp: ["+l.scope+"] "+format+"\n", args...)
+}
+
+type loggerFactory struct{}
+
+func (loggerFactory) NewLogger(scope string) logging.LeveledLogger { return errLogger{scope} }

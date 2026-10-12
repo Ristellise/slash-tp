@@ -68,8 +68,12 @@ func runReceive(outDir, codeFile string) error {
 	defer pc.Close()
 
 	errCh := make(chan error, 1)
+	var cands []iceCand
+	ice := &iceState{}
+	pc.OnICEConnectionStateChange(ice.set)
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		if s == webrtc.PeerConnectionStateFailed {
+			reportConnFailure(ice.get(), cands, offerCands)
 			select {
 			case errCh <- errors.New("connection failed"):
 			default:
@@ -88,7 +92,6 @@ func runReceive(outDir, codeFile string) error {
 	if err != nil {
 		return err
 	}
-	var cands []iceCand
 	gatherDone := gatherCandidates(pc, &cands)
 	if err = pc.SetLocalDescription(answer); err != nil {
 		return err

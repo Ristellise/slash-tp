@@ -59,8 +59,12 @@ func runSend(root string, nCh int, codeFile string) error {
 		default:
 		}
 	}
+	var cands, remoteCands []iceCand
+	ice := &iceState{}
+	pc.OnICEConnectionStateChange(ice.set)
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		if s == webrtc.PeerConnectionStateFailed {
+			reportConnFailure(ice.get(), cands, remoteCands)
 			fail(errors.New("connection failed"))
 		}
 	})
@@ -96,7 +100,6 @@ func runSend(root string, nCh int, codeFile string) error {
 	if err != nil {
 		return err
 	}
-	var cands []iceCand
 	gatherDone := gatherCandidates(pc, &cands)
 	if err = pc.SetLocalDescription(offer); err != nil {
 		return err
@@ -119,6 +122,7 @@ func runSend(root string, nCh int, codeFile string) error {
 	if err != nil {
 		return err
 	}
+	remoteCands = ansCands
 	answer := webrtc.SessionDescription{
 		Type: webrtc.SDPTypeAnswer,
 		SDP:  buildSDP(sess.Ufrag, sess.Pwd, sess.Fp, "active", candStrings(ansCands)),

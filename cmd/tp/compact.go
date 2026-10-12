@@ -29,6 +29,8 @@ type iceCand struct {
 
 var candTypes = map[string]byte{"host": candHost, "srflx": candSrflx, "prflx": candPrflx, "relay": candRelay}
 
+var candTypeNames = map[byte]string{candHost: "host", candSrflx: "srflx", candPrflx: "prflx", candRelay: "relay"}
+
 func parseCand(s string) (iceCand, bool) {
 	var c iceCand
 	f := strings.Fields(strings.TrimPrefix(s, "candidate:"))
@@ -74,7 +76,7 @@ func (c iceCand) marshal() string {
 	h.Write([]byte{c.typ})
 	h.Write(c.ip)
 	found := h.Sum32()
-	typ := map[byte]string{candHost: "host", candSrflx: "srflx", candPrflx: "prflx", candRelay: "relay"}[c.typ]
+	typ := candTypeNames[c.typ]
 	line := fmt.Sprintf("candidate:%d 1 udp %d %s %d typ %s", found, c.prio, c.ip, c.port, typ)
 	if c.typ == candSrflx || c.typ == candPrflx {
 		line += fmt.Sprintf(" raddr %s rport %d", c.raddr, c.rport)
