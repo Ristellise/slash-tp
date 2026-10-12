@@ -5,10 +5,10 @@ Peer-to-peer file & folder transfer over WebRTC data channels (pion/webrtc). P2P
 ## Install
 
 ```
-curl -fsSL https://raw.githubusercontent.com/Ristellise/slash-tp/main/scripts/install.sh | bash
+curl -fsSL https://github.com/Ristellise/slash-tp/releases/latest/download/install.sh | bash
 ```
 
-Installs the latest release binary for your OS/arch into `/usr/local/bin` (or `~/.local/bin`, or `BINDIR` if set) and verifies its sha256 against the release checksums. Binaries: linux/darwin/windows × amd64/arm64 on the [releases page](https://github.com/Ristellise/slash-tp/releases).
+Downloads the latest release binary for your OS/arch, verifies its sha256 against the release checksums, and installs into `/usr/local/bin` (or `~/.local/bin`, or `BINDIR` if set). Binaries: linux/darwin/windows × amd64/arm64 on the [releases page](https://github.com/Ristellise/slash-tp/releases).
 
 Or build from source:
 

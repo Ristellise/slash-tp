@@ -24,6 +24,7 @@ jobs:
               -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
               -o "dist/tp-${os}-${arch}${ext}" .
           done
+          cp scripts/install.sh dist/
           (cd dist && sha256sum * > checksums.txt)
       - uses: softprops/action-gh-release@v2
         with:
