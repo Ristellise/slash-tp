@@ -65,6 +65,11 @@ func (s *session) newPeerConnection(external string) (*webrtc.PeerConnection, er
 	se.SetICECredentials(s.Ufrag, s.Pwd)
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	se.LoggerFactory = loggerFactory{}
+	// long-fat-network tuning: keep cwnd from collapsing and ramp fast
+	se.SetSCTPMaxReceiveBufferSize(4 << 20)
+	se.SetSCTPMinCwnd(1 << 20)
+	se.SetSCTPCwndCAStep(256 << 10)
+	se.EnableSCTPZeroChecksum(true)
 	cfg := webrtc.Configuration{
 		ICEServers:   []webrtc.ICEServer{{URLs: stunServers}},
 		Certificates: []webrtc.Certificate{*s.Cert},
