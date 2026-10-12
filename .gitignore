@@ -1,0 +1,4 @@
+/tp
+/dist/
+*.test
+.nfs*
