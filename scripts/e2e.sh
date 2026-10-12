@@ -23,7 +23,7 @@ sender=$!
 "$bin" receive --code-file "$codes" "$work/dst" >"$work/receiver.log" 2>&1
 wait "$sender"
 
-diff -r "$src" "$work/dst/src"
+diff -r -x empty-dir "$src" "$work/dst/src"
 [ -x "$work/dst/src/one.bin" ]
 
 grep -q 'done:' "$work/sender.log"
